@@ -8,22 +8,22 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const fmt = (n) => Number(n).toLocaleString('ru-RU');
   const rub = (n) => fmt(n) + ' ₽';
+  const site = (C.site || '').replace(/\/+$/, '');
+
+  const get = (path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), C);
 
   /* ---------- значения из конфига в разметку ---------- */
-  const V = {
+  const values = {
     phone: C.phoneText,
-    email: C.email,
-    addressShort: C.addressShort,
-    addressFull: C.addressFull,
     legalName: C.legalName,
-    inn: C.inn,
-    ogrnip: C.ogrnip,
     checkin: C.checkin,
     checkout: C.checkout,
     minNights: String(C.minNights),
     deposit: rub(C.deposit),
     pets: C.pets,
     cancel: C.cancel,
+    'address.short': C.address.short,
+    'prices.note': C.prices.note,
     'minutes.airport': C.minutes.airport + ' мин',
     'minutes.center': C.minutes.center + ' мин',
     'minutes.station': C.minutes.station + ' мин'
@@ -31,45 +31,267 @@
 
   Object.keys(C.houses).forEach((id) => {
     const h = C.houses[id];
-    const p = C.prices[id];
-    V[id + '.guests'] = 'до ' + h.guests;
-    V[id + '.bedrooms'] = String(h.bedrooms);
-    V[id + '.area'] = String(h.area);
-    V['from.' + id] = 'от ' + fmt(p.weekday) + ' ₽';
-    V['price.' + id + '.weekday'] = rub(p.weekday);
-    V['price.' + id + '.weekend'] = rub(p.weekend);
-    V['price.' + id + '.holiday'] = rub(p.holiday);
+    values[id + '.tagline'] = h.tagline;
+    values[id + '.guests'] = 'до ' + h.guests;
+    values[id + '.bedrooms'] = String(h.bedrooms);
+    values[id + '.area'] = String(h.area);
+    values[id + '.checkin'] = h.checkin || C.checkin;
+    values[id + '.checkout'] = h.checkout || C.checkout;
+    values[id + '.address'] = h.address || C.address.short;
+    values[id + '.distance'] = h.distance || '';
+    values[id + '.priceFrom'] = h.priceFrom == null
+      ? 'цена по запросу'
+      : 'от ' + fmt(h.priceFrom) + ' ₽';
   });
 
   $$('[data-cfg]').forEach((el) => {
-    const v = V[el.dataset.cfg];
-    if (v != null) el.textContent = v;
+    const key = el.dataset.cfg;
+    if (values[key] != null) {
+      el.textContent = values[key];
+    } else {
+      const v = get(key);
+      if (v != null && typeof v !== 'object') el.textContent = String(v);
+    }
   });
 
   const links = {
     tel: 'tel:' + C.phoneRaw,
-    whatsapp: 'https://wa.me/' + C.whatsapp,
     telegram: 'https://t.me/' + C.telegram,
-    email: 'mailto:' + C.email
   };
   $$('a[data-cfg-href]').forEach((a) => {
-    a.href = links[a.dataset.cfgHref] || '#';
+    const href = links[a.dataset.cfgHref];
+    if (href) a.href = href;
   });
 
-  /* ---------- таблица доп. услуг ---------- */
-  const extrasBody = $('#extrasBody');
-  if (extrasBody && Array.isArray(C.extras)) {
-    extrasBody.textContent = '';
+  const priceNote = (el) => {
+    if (!C.prices.ph) return el;
+    el.dataset.ph = '';
+    el.title = 'Заглушка: цена в assets/js/config.js';
+    return el;
+  };
+
+  /* ---------- карточки тарифов на странице A-frame ---------- */
+  const priceCards = $('#priceCards');
+  if (priceCards && C.prices && C.prices.tariffs) {
+    C.prices.tariffs.forEach((t) => {
+      const card = document.createElement('article');
+      card.className = 'price-card';
+
+      const head = document.createElement('header');
+      head.className = 'price-card__head';
+      const name = document.createElement('h3');
+      name.textContent = t.name;
+      const cap = document.createElement('span');
+      cap.textContent = t.cap;
+      head.append(name, cap);
+      card.append(head);
+
+      [['Дом', t.house, false], ['Дом + баня', t.bath, true]].forEach(([label, opt, hot]) => {
+        const box = document.createElement('div');
+        box.className = 'price-opt' + (hot ? ' price-opt--hot' : '');
+
+        const title = document.createElement('p');
+        title.className = 'price-opt__name';
+        title.append(document.createTextNode(label));
+        if (hot) {
+          const badge = document.createElement('em');
+          badge.textContent = '5 часов';
+          title.append(badge);
+        }
+        box.append(title);
+
+        const days = document.createElement('dl');
+        days.className = 'price-days';
+        [['Вс–Чт', opt.sunThu], ['Пятница', opt.fri], ['Суббота', opt.sat]].forEach(([day, value]) => {
+          const row = document.createElement('div');
+          const dt = document.createElement('dt');
+          dt.textContent = day;
+          const dd = document.createElement('dd');
+          if (value == null) {
+            dd.className = 'is-request';
+            dd.textContent = 'по запросу';
+          } else {
+            dd.textContent = rub(value);
+            priceNote(dd);
+          }
+          row.append(dt, dd);
+          days.append(row);
+        });
+        box.append(days);
+        card.append(box);
+      });
+
+      const book = document.createElement('a');
+      book.className = 'btn btn--primary';
+      book.href = '#booking';
+      book.textContent = 'Забронировать';
+      card.append(book);
+
+      priceCards.append(card);
+    });
+  }
+
+  /* ---------- таблица цен на главной и в Barnhouse ---------- */
+  const priceRows = $('#priceRows');
+  if (priceRows && C.prices) {
+    const cell = (value, label) => {
+      const td = document.createElement('td');
+      td.dataset.label = label;
+      if (value == null) {
+        td.className = 'is-request';
+        td.textContent = 'по запросу';
+      } else {
+        const b = document.createElement('b');
+        b.textContent = rub(value);
+        priceNote(b);
+        td.append(b);
+      }
+      return td;
+    };
+
+    const putRow = (title, sub, data) => {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = title;
+      if (sub) {
+        const small = document.createElement('small');
+        small.textContent = sub;
+        th.append(small);
+      }
+      tr.append(th);
+      tr.append(
+        cell(data.sunThu, 'Вс–чт'),
+        cell(data.fri, 'Пятница'),
+        cell(data.sat, 'Суббота'),
+        cell(null, 'Праздники')
+      );
+      priceRows.append(tr);
+    };
+
+    const only = priceRows.dataset.house;
+
+    if (only !== 'Barnhouse') {
+      C.prices.tariffs.forEach((t) => {
+        putRow('A-frame · Дом', t.name + ' · ' + t.cap, t.house);
+        putRow('A-frame · Дом + баня', t.name + ' · ' + t.cap, t.bath);
+      });
+    }
+    if (!only || only === 'Barnhouse') {
+      putRow('Barnhouse · Дом целиком', 'до ' + C.houses.barnhouse.guests + ' гостей', {
+        sunThu: null, fri: null, sat: null
+      });
+    }
+  }
+
+  /* ---------- доп. услуги: список и таблица ---------- */
+  const extrasList = $('#extrasList');
+  if (extrasList) {
+    const house = extrasList.dataset.house;
+    const list = house ? ((C.houses[house] || {}).extras || []) : C.extras;
+    list.forEach((x) => {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.textContent = x.name;
+      const price = document.createElement('b');
+      price.textContent = x.price || '—';
+      li.append(name, price);
+      if (x.note) {
+        const note = document.createElement('small');
+        note.textContent = x.note;
+        li.append(note);
+      }
+      extrasList.append(li);
+    });
+  }
+
+  const extraRows = $('#extraRows');
+  if (extraRows && Array.isArray(C.extras)) {
     C.extras.forEach((x) => {
       const tr = document.createElement('tr');
-      [['Услуга', x.name], ['Цена', x.price], ['Примечание', x.note]].forEach(([label, val]) => {
-        const td = document.createElement('td');
-        td.dataset.label = label;
-        td.textContent = val || '—';
-        tr.appendChild(td);
-      });
-      extrasBody.appendChild(tr);
+      const th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = x.name;
+      const price = document.createElement('td');
+      price.dataset.label = 'Цена';
+      price.textContent = x.price || '—';
+      const note = document.createElement('td');
+      note.dataset.label = 'Примечание';
+      note.textContent = x.note || '—';
+      tr.append(th, price, note);
+      extraRows.append(tr);
     });
+  }
+
+  /* ---------- микроразметка LocalBusiness + Accommodation ---------- */
+  if (site && !$('#ld-json')) {
+    const amenities = ['Wi-Fi', 'Кухня', 'Парковка', 'Баня', 'Мангал'].map((name) => ({
+      '@type': 'LocationFeatureSpecification',
+      name,
+      value: true
+    }));
+    const nums = [];
+    (C.prices && C.prices.tariffs ? C.prices.tariffs : []).forEach((t) => {
+      [t.house, t.bath].forEach((opt) => {
+        if (!opt) return;
+        [opt.sunThu, opt.fri, opt.sat].forEach((n) => {
+          if (typeof n === 'number') nums.push(n);
+        });
+      });
+    });
+    const minPrice = nums.length ? Math.min.apply(null, nums) : null;
+
+    const business = {
+      '@type': 'LodgingBusiness',
+      '@id': site + '/#business',
+      name: 'Два дома в Сургуте',
+      description: 'Посуточная аренда двух домов в Сургуте: A-frame со стеклянной стеной и барнхаус с панорамными окнами.',
+      url: site + '/',
+      image: [site + '/images/aframe-banner.jpg', site + '/images/aframe-facade.jpg', site + '/images/barnhouse-facade.jpg'],
+      telephone: C.phoneRaw,
+        checkinTime: C.checkin,
+      checkoutTime: C.checkout,
+      currenciesAccepted: 'RUB',
+      address: {
+        '@type': 'PostalAddress',
+        addressLocality: 'Сургут',
+        addressRegion: 'Ханты-Мансийский автономный округ — Югра',
+        addressCountry: 'RU',
+        ...(C.address.street ? { streetAddress: C.address.street } : {})
+      },
+      amenityFeature: amenities,
+      containsPlace: ['aframe', 'barnhouse'].map((id) => {
+        const h = C.houses[id];
+        return {
+          '@type': 'Accommodation',
+          '@id': site + '/' + id + '.html',
+          name: h.name + ' в Сургуте',
+          description: h.tagline,
+          url: site + '/' + id + '.html',
+          image: site + '/images/' + id + '-facade.jpg',
+          occupancy: { '@type': 'QuantitativeValue', maxValue: h.guests },
+          numberOfBedrooms: h.bedrooms,
+          floorSize: { '@type': 'QuantitativeValue', value: h.area, unitCode: 'MTK' },
+          amenityFeature: amenities
+        };
+      })
+    };
+
+    if (minPrice != null) business.priceRange = 'от ' + fmt(minPrice) + ' ₽ за сутки';
+
+    const ld = document.createElement('script');
+    ld.type = 'application/ld+json';
+    ld.id = 'ld-json';
+    ld.textContent = JSON.stringify({ '@context': 'https://schema.org', '@graph': [business] });
+    document.head.append(ld);
+  }
+
+  /* ---------- прозрачная шапка над первым экраном ---------- */
+  const heroEl = $('.hero');
+  if (heroEl) {
+    const syncHeader = () => document.body.classList.toggle('hero-under', window.scrollY < 40);
+    syncHeader();
+    window.addEventListener('scroll', syncHeader, { passive: true });
   }
 
   /* ---------- просмотр фото ---------- */
@@ -104,6 +326,7 @@
     lbCap.textContent = s.label + ' · ' + (current + 1) + ' из ' + shots.length;
 
     [shots[(current + 1) % shots.length], shots[(current - 1 + shots.length) % shots.length]].forEach((p) => {
+      if (!p) return;
       new Image().src = p.jpg;
       if (p.webp) new Image().src = p.webp;
     });
@@ -127,7 +350,7 @@
 
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.shot__btn');
-    if (!btn) return;
+    if (!btn || !lb) return;
     const gallery = btn.closest('.gal');
     if (!gallery) return;
     const buttons = $$('.shot__btn', gallery);
@@ -207,6 +430,12 @@
   };
   const done = $('#done');
 
+  const caps = {
+    'A-frame': C.houses.aframe.guests,
+    'Barnhouse': C.houses.barnhouse.guests
+  };
+  const maxAll = Math.max.apply(null, Object.keys(caps).map((k) => caps[k]));
+
   const isoLocal = (d) =>
     new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const addDays = (iso, days) => {
@@ -225,12 +454,13 @@
     if (f.out.value && f.out.value < minOut) f.out.value = minOut;
   });
 
-  f.house.addEventListener('change', () => {
-    const caps = { 'A-frame': 4, 'Barnhouse': 6 };
-    const cap = caps[f.house.value] || 8;
+  const setCap = () => {
+    const cap = caps[f.house.value] || maxAll;
     f.guests.max = cap;
     if (Number(f.guests.value) > cap) f.guests.value = cap;
-  });
+  };
+  f.house.addEventListener('change', setCap);
+  setCap();
 
   const phoneDigits = (v) => v.replace(/\D/g, '');
   const isPhone = (v) => {
@@ -263,7 +493,7 @@
     const name = f.name.value.trim();
     const phone = f.phone.value.trim();
     const guestsNum = Number(f.guests.value);
-    const maxGuests = Number(f.guests.max) || 8;
+    const maxGuests = Number(f.guests.max) || maxAll;
 
     if (name.length < 2) {
       setErr('name', 'Напишите имя — хотя бы 2 буквы');
@@ -303,7 +533,7 @@
       (new Date(f.out.value + 'T12:00:00') - new Date(f.in.value + 'T12:00:00')) / 86400000
     );
     const lines = [
-      'Заявка с сайта «Два дома в Сургуте»',
+      C.requestTitle,
       'Дом: ' + f.house.value,
       'Заезд: ' + ruDate(f.in.value) + ', выезд: ' + ruDate(f.out.value) + ' (' + nights + ' ноч.)',
       'Гостей: ' + guestsNum,
@@ -315,12 +545,23 @@
     lines.push('Согласие на обработку персональных данных: да');
 
     const text = lines.join('\n');
-    const waUrl = 'https://wa.me/' + C.whatsapp + '?text=' + encodeURIComponent(text);
+
+    saveRequest({
+      id: Date.now(),
+      createdAt: new Date().toISOString(),
+      house: f.house.value,
+      in: f.in.value,
+      out: f.out.value,
+      nights,
+      guests: guestsNum,
+      name,
+      phone,
+      comment,
+      status: 'new'
+    });
 
     copyText(text);
-    window.open(waUrl, '_blank', 'noopener');
 
-    $('#doneWa').href = waUrl;
     $('#doneTg').href = links.telegram;
     $('#doneText').textContent = text;
     done.hidden = false;
@@ -342,6 +583,16 @@
       navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
     } else {
       fallbackCopy(text);
+    }
+  }
+
+  function saveRequest(item) {
+    try {
+      const list = JSON.parse(localStorage.getItem('requests') || '[]');
+      list.unshift(item);
+      localStorage.setItem('requests', JSON.stringify(list.slice(0, 100)));
+    } catch (err) {
+      /* хранилище недоступно — текст заявки всё равно скопирован */
     }
   }
 
